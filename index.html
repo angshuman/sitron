@@ -591,7 +591,14 @@ class MelodyEngine {
     const antara=clean([...aro.slice(1,Math.min(aro.length,7)),12+R.vadi,12+R.samvadi,12+ny]);
     const descent=clean([...ava.slice(0,Math.min(ava.length,8)),R.vadi,ny,0]);
     const taan=clean([...aro,...ava].filter((_,i)=>i%1===0));
-    return{mukhda,answer,antara,descent,taan,ny};
+    const low=clean([-12+ny,-12+R.vadi,0,R.vadi,ny]);
+    const refrain=clean([...mukhda,...answer,...descent.slice(-5),ny,0]);
+    const sthayiLine=clean([...mukhda,...answer,...pak,...answer.map((n,i)=>i%2?n:R.vadi),ny,0,...mukhda.slice(1)]);
+    const verseLine=clean([...low,...mukhda,...answer,...pak.slice().reverse(),R.vadi,R.samvadi,R.vadi,ny,0]);
+    const antaraLine=clean([...aro.slice(1),12+R.vadi,12+R.samvadi,12+ny,12+R.vadi,...descent,...answer]);
+    const alapLine=clean([0,ny,R.vadi,R.samvadi,R.vadi,ny,0,...pak,ny,R.vadi,0,...descent.slice(-5)]);
+    const taanLine=clean([...aro,...aro.slice(2).map(n=>n+12),...ava.map(n=>n+12),...ava,R.vadi,ny,0]);
+    return{mukhda,answer,antara,descent,taan,ny,low,refrain,sthayiLine,verseLine,antaraLine,alapLine,taanLine};
   }
   _addEvent(list,beat,section,interval,dur=1,vel=0.75,gamaka=null){
     const R=RAAGS[S.raag]; if(!R)return;
@@ -604,24 +611,40 @@ class MelodyEngine {
     notes.forEach((n,i)=>{const d=rhythm[i%rhythm.length];this._addEvent(list,b,section,n,Math.max(0.22,d*0.92),vel);b+=d});
     return b;
   }
+  _longLine(list,start,end,section,notes,rhythm,vel=0.72,opts={}){
+    let b=start,i=0,cycleBeats=opts.cadenceEvery||16,lastCad=start+cycleBeats;
+    while(b<end-0.35){
+      const d=Math.min(rhythm[i%rhythm.length],end-b);
+      let n=notes[i%notes.length];
+      if(opts.liftEvery&&i>0&&i%opts.liftEvery===0)n+=12;
+      if(opts.dropEvery&&i>0&&i%opts.dropEvery===0)n-=12;
+      const pulse=0.88+0.12*Math.sin(i*0.53);
+      const gam=(opts.meendEvery&&i%opts.meendEvery===0)?'meend':(opts.andolanEvery&&i%opts.andolanEvery===0?'andolan':null);
+      this._addEvent(list,b,section,n,Math.max(0.18,d*0.88),vel*pulse,gam);
+      b+=d;i++;
+      if(b>=lastCad&&b<end-1.2){
+        this._addEvent(list,Math.max(start,lastCad-0.75),section,opts.cadence??0,0.75,Math.min(0.95,vel+0.1),'meend');
+        lastCad+=cycleBeats;
+      }
+    }
+    this._addEvent(list,Math.max(start,end-1),section,opts.final??0,1,Math.min(0.98,vel+0.12),'meend');
+  }
   _fillSection(list,start,bars,section,type,m){
     const end=start+bars*4;
     if(type==='intro'){
-      let b=start,seq=[0,m.ny,m.mukhda[0],m.mukhda[1],m.mukhda[2],m.ny,0];
-      while(b<end-1){const n=seq[Math.floor((b-start)/2)%seq.length];this._addEvent(list,b,section,n,Math.min(2.8,end-b),0.46,'meend');b+=2}
+      this._longLine(list,start,end,section,m.alapLine,[2,2,1.5,2.5,1,3,1.5,2],0.46,{cadenceEvery:12,meendEvery:2,andolanEvery:5,final:0});
     } else if(type==='chorus'){
-      for(let b=start;b<end;b+=4){this._addPhrase(list,b,section,m.mukhda,[0.5,0.5,0.75,0.75,0.5,0.5,0.5,0.5],0.78);this._addEvent(list,b+3.5,section,0,0.5,0.78)}
+      this._longLine(list,start,end,section,m.refrain,[0.5,0.5,0.75,0.75,0.5,0.5,1,0.5,0.5,1],0.8,{cadenceEvery:8,meendEvery:8,final:0});
     } else if(type==='verse'){
-      for(let b=start;b<end;b+=8){this._addPhrase(list,b,section,m.mukhda,[0.75,0.75,0.5,1,1],0.66);this._addPhrase(list,b+4,section,m.answer,[0.75,0.75,0.5,1,1],0.64)}
+      this._longLine(list,start,end,section,m.verseLine,[0.75,0.75,0.5,1,0.5,1.5,0.75,0.75,1,1],0.66,{cadenceEvery:16,meendEvery:10,andolanEvery:7,final:m.ny});
     } else if(type==='antara'){
-      for(let b=start;b<end;b+=8){this._addPhrase(list,b,section,m.antara,[0.5,0.5,0.5,0.5,1,1],0.7);this._addPhrase(list,b+4,section,m.descent,[0.5,0.5,0.75,0.75,0.5,1],0.68)}
+      this._longLine(list,start,end,section,m.antaraLine,[0.5,0.5,0.5,0.5,1,1.5,0.5,0.75,0.75,1],0.72,{cadenceEvery:16,meendEvery:9,andolanEvery:6,liftEvery:14,final:0});
     } else if(type==='taan'){
-      const step=S.melody.density>0.65?0.25:0.5;let b=start,i=0;
-      while(b<end-0.25){this._addEvent(list,b,section,m.taan[i%m.taan.length],step*0.88,0.58,null);b+=step;i++}
+      const step=S.melody.density>0.65?0.25:0.5;let b=start,i=0,line=m.taanLine;
+      while(b<end-0.25){const burst=(i%16)<12;this._addEvent(list,b,section,line[i%line.length],step*(burst?0.86:1.35),burst?0.58:0.45,null);b+=step*(burst?1:1.5);i++}
       this._addEvent(list,end-1,section,0,1,0.82,'meend');
     } else if(type==='outro'){
-      let b=start,seq=[m.descent[0],m.descent[2]||m.ny,m.ny,0];
-      while(b<end){this._addEvent(list,b,section,seq[Math.floor((b-start)/2)%seq.length],Math.min(2.6,end-b),0.42,'andolan');b+=2}
+      this._longLine(list,start,end,section,[...m.descent,m.ny,0],[2,2.5,1.5,3,2,4],0.42,{cadenceEvery:12,andolanEvery:2,final:0});
     }
   }
   composeSong(){
@@ -629,11 +652,11 @@ class MelodyEngine {
     const key=`${S.raag}:${S.melody.form}:${S.melody.seed}:${S.melody.density}`;
     const rng=this._rng(this._hash(key)),m=this._motifs(R,rng),events=[],sections=[];
     const layouts={
-      bandish:[['Intro / Alap',8,'intro'],['Verse 1 / Sthayi',16,'verse'],['Chorus / Mukhda',8,'chorus'],['Verse 2 / Antara',16,'antara'],['Chorus Return',8,'chorus'],['Bridge / Taan',8,'taan'],['Final Chorus',16,'chorus'],['Outro',8,'outro']],
-      bhajan:[['Intro',4,'intro'],['Verse 1',12,'verse'],['Chorus / Mukhda',8,'chorus'],['Verse 2',12,'antara'],['Chorus Return',8,'chorus'],['Verse 3',12,'verse'],['Final Chorus',12,'chorus'],['Outro',4,'outro']],
-      thumri:[['Intro / Bol Banao',8,'intro'],['Verse / Sthayi',12,'verse'],['Chorus / Refrain',8,'chorus'],['Antara',12,'antara'],['Bol Banao Bridge',8,'intro'],['Taan',8,'taan'],['Final Refrain',12,'chorus'],['Outro',4,'outro']],
-      alapgat:[['Alap Intro',12,'intro'],['Jor Verse',12,'verse'],['Gat Theme',8,'chorus'],['Antara',12,'antara'],['Gat Return',8,'chorus'],['Jhala / Taan',12,'taan'],['Final Gat',8,'chorus'],['Outro',4,'outro']],
-      folk:[['Intro',4,'intro'],['Verse 1',8,'verse'],['Chorus',8,'chorus'],['Verse 2',8,'antara'],['Chorus',8,'chorus'],['Bridge',8,'taan'],['Final Chorus',8,'chorus'],['Outro',4,'outro']]
+      bandish:[['Alap Intro',12,'intro'],['Sthayi Long Line',24,'verse'],['Mukhda Return',12,'chorus'],['Antara Long Line',24,'antara'],['Sthayi Reprise',16,'verse'],['Taan Vistar',16,'taan'],['Final Mukhda',20,'chorus'],['Outro / Nyas',8,'outro']],
+      bhajan:[['Invocation',8,'intro'],['Verse 1',16,'verse'],['Refrain',12,'chorus'],['Verse 2',16,'antara'],['Refrain Return',12,'chorus'],['Verse 3',16,'verse'],['Final Refrain',16,'chorus'],['Outro',8,'outro']],
+      thumri:[['Bol Banao Intro',12,'intro'],['Sthayi Expansion',20,'verse'],['Refrain',12,'chorus'],['Antara Expansion',20,'antara'],['Bol Banao Bridge',12,'intro'],['Taan / Murki',12,'taan'],['Final Refrain',16,'chorus'],['Outro',8,'outro']],
+      alapgat:[['Alap Vistar',20,'intro'],['Jor Development',20,'verse'],['Gat Theme',16,'chorus'],['Antara',24,'antara'],['Gat Return',16,'chorus'],['Jhala / Taan',20,'taan'],['Final Gat',16,'chorus'],['Outro',8,'outro']],
+      folk:[['Intro',8,'intro'],['Verse 1',16,'verse'],['Chorus',12,'chorus'],['Verse 2',16,'antara'],['Chorus Return',12,'chorus'],['Bridge',12,'taan'],['Final Chorus',16,'chorus'],['Outro',8,'outro']]
     };
     let beat=0;(layouts[S.melody.form]||layouts.bandish).forEach(([name,bars,type])=>{
       sections.push({name,start:beat,end:beat+bars*4,type});this._fillSection(events,beat,bars,name,type,m);beat+=bars*4;
