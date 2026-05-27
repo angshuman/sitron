@@ -854,6 +854,7 @@ class DrumEngine {
     this.beat=0;this.nextTime=0;this.scheduler=null;
     this.gridStart=0;this.loopSrc=null;this.loopGain=null;this.loopKey='';this.loopStartTime=0;
     this.loopCache={};this.samples=null;
+    this.autoPattern=null;this.nextPatternBar=12;this.nextRollBar=7;this.lastRollStep=-999;this.variationLabel='';
     this.handpanScale=[146.8,220,233,261.6,293.7,329.6,349.2,440];
     this.handpanPc=[0,7,8,10,0,2,3,7];
     this.banks={
@@ -920,12 +921,31 @@ class DrumEngine {
 
   getPatterns(type=S.drums.type){return (this.banks[type]||this.banks.tabla).patterns}
   getTypeEntries(){return Object.entries(this.banks)}
+  _activePatternIndex(type=S.drums.type){
+    const pats=this.getPatterns(type),idx=this.autoPattern??S.drums.pattern;
+    return Math.max(0,Math.min(pats.length-1,idx%pats.length));
+  }
   _syncLegacy(){
-    const pats=this.getPatterns(S.drums.type),idx=Math.min(S.drums.pattern,pats.length-1);
+    const pats=this.getPatterns(S.drums.type),idx=this._activePatternIndex(S.drums.type);
     this.current=`${S.drums.type}:${idx}`;
     this.patterns={[this.current]:pats[idx]||{name:''}};
   }
-  reset(){this.beat=0;this.nextTime=AC.currentTime+0.05;this._syncLegacy();this._stopSampleLoop(0.06)}
+  reset(){
+    this.beat=0;this.nextTime=AC.currentTime+0.05;this.autoPattern=S.drums.pattern;
+    this.nextPatternBar=10+Math.floor(Math.random()*8);this.nextRollBar=5+Math.floor(Math.random()*6);
+    this.lastRollStep=-999;this.variationLabel='';this._syncLegacy();this._stopSampleLoop(0.06)
+  }
+  _maybeChangePattern(barNo){
+    const pats=this.getPatterns(); if(pats.length<2)return false;
+    if(barNo>=this.nextPatternBar){
+      const step=1+Math.floor(Math.random()*(pats.length-1));
+      this.autoPattern=((this.autoPattern??S.drums.pattern)+step)%pats.length;
+      this.nextPatternBar=barNo+8+Math.floor(Math.random()*10);
+      this.variationLabel=`→ ${pats[this.autoPattern].name}`;
+      this._syncLegacy();return true;
+    }
+    return false;
+  }
 
   _series(src,specs){
     let n=src;
@@ -1033,6 +1053,10 @@ class DrumEngine {
   }
   _kitEvents(pat){
     const bars=pat.bars||8,ev=[],add=(step,k,vel=1,pan=0)=>ev.push({step,k,vel,pan});
+    const roll=(x,soft=false)=>{
+      const seq=pat.id==='dhyanBrush'||pat.id==='ratriDeep'?['W','C','W','R','W','C','W','O']:['G','H','S','H','T','T','S','O'];
+      seq.forEach((k,i)=>add(x+12+i*.5,k,(soft?.16:.24)+i*.025,i%2?0.28:-0.18));
+    };
     for(let b=0;b<bars;b++){
       const x=b*16,last=b===bars-1;
       switch(pat.id){
@@ -1082,6 +1106,7 @@ class DrumEngine {
           for(let s=0;s<16;s+=2)add(x+s,'H',0.30,0.27); if(b%2)add(x+14,'O',0.32,0.32);
           break;
       }
+      if((b+1)%4===0)roll(x,pat.id==='dhyanBrush'||pat.id==='ratriDeep'||pat.id==='virahaHalf');
     }
     return ev;
   }
@@ -1116,7 +1141,9 @@ class DrumEngine {
   }
   _scheduleSampleLoop(){
     if(!S.on||!S.drums.on){this._stopSampleLoop(0.12);return}
-    const pat=this.getPatterns()[Math.min(S.drums.pattern,this.getPatterns().length-1)],key=`${S.drums.type}:${S.drums.pattern}`;
+    const barDur=240/Math.max(1,S.tempo),barNo=Math.max(0,Math.floor((AC.currentTime-(this.gridStart||AC.currentTime))/barDur));
+    if(this._maybeChangePattern(barNo))this._stopSampleLoop(0.12);
+    const idx=this._activePatternIndex(),pat=this.getPatterns()[idx],key=`${S.drums.type}:${idx}`;
     const rate=Math.max(0.55,Math.min(1.65,S.tempo/(pat.bpm||S.tempo||72)));
     if(this.loopSrc&&this.loopKey===key){
       this.loopSrc.playbackRate.setTargetAtTime(rate,AC.currentTime,0.04);
@@ -1241,6 +1268,29 @@ class DrumEngine {
     car.start(time);mod.start(time);car.stop(time+2.9);mod.stop(time+2.9);
   }
 
+  _maybeRoll(barNo,barPos,time,stepDur){
+    if(barNo!==this.nextRollBar||barPos<5||this.lastRollStep===this.beat)return;
+    this.lastRollStep=this.beat;
+    this._playRoll(time,stepDur,0.42+barPos*0.045,barPos);
+    if(barPos>=7)this.nextRollBar=barNo+5+Math.floor(Math.random()*8);
+  }
+
+  _playRoll(time,stepDur,vel,phase=0){
+    const hits=phase>=7?5:3,dt=stepDur/(hits+0.5),type=S.drums.type;
+    for(let i=0;i<hits;i++){
+      const t=time+i*dt,v=vel*(0.72+i*0.11);
+      if(type==='tabla'){[()=>this._tablaNa(t,v),()=>this._tablaTin(t,v*.9),()=>this._tablaKe(t,v*.75)][i%3]();if(i===hits-1)this._tablaDha(t+dt*.45,v*.85)}
+      else if(type==='pakhawaj'){[()=>this._pakhTiTa(t,v),()=>this._pakhTa(t,v*.9),()=>this._pakhDin(t,v*.85)][i%3]();if(i===hits-1)this._pakhGhe(t+dt*.45,v*.75)}
+      else if(type==='mridangam'){[()=>this._mrKi(t,v),()=>this._mrTha(t,v*.9),()=>this._mrThi(t,v*.9),()=>this._mrDin(t,v*.8)][i%4]();if(i===hits-1)this._mrChapu(t+dt*.4,v*.75)}
+      else if(type==='dholak'){[()=>this._dhNa(t,v),()=>this._dhKa(t,v*.9),()=>this._dhChak(t,v*.7),()=>this._dhTin(t,v*.8)][i%4]();if(i===hits-1)this._dhGe(t+dt*.35,v*.72)}
+      else if(type==='djembe'){[()=>this._djSlap(t,v),()=>this._djTone(t,v*.85),()=>this._djSlap(t,v*.75)][i%3]();if(i===hits-1)this._djBass(t+dt*.35,v*.8)}
+      else if(type==='kanjira'){[()=>this._kanNa(t,v),()=>this._kanThi(t,v*.9),()=>this._kanTha(t,v*.82)][i%3]();if(i===hits-1)this._kanDin(t+dt*.35,v*.8)}
+      else if(type==='cajon'){[()=>this._cajEdge(t,v*.45),()=>this._cajEdge(t,v*.6),()=>this._cajBass(t,v*.55)][i%3]()}
+      else if(type==='handpan')this._playHandpan(i+phase,t,v*.7);
+    }
+    this.variationLabel='roll';
+  }
+
   _playBol(char,time,vel){
     switch(S.drums.type){
       case'tabla':this._playTabla(char,time,vel);break;
@@ -1258,17 +1308,21 @@ class DrumEngine {
     this._syncLegacy();
     if(this._isSampleBank()){this._scheduleSampleLoop();return}
     this._stopSampleLoop(0.04);
-    const pats=this.getPatterns();
-    const pat=pats[Math.min(S.drums.pattern,pats.length-1)]||pats[0];
-    const seq=Array.isArray(pat.seq)?pat.seq:pat.seq.replace(/\|/g,'');
-    const totalSteps=seq.length,beatDur=60/S.tempo,stepDur=beatDur/2;
+    const beatDur=60/S.tempo,stepDur=beatDur/2;
     while(this.nextTime<AC.currentTime+0.12){
+      const barNo=Math.floor(this.beat/8),barPos=this.beat%8;
+      if(barPos===0)this._maybeChangePattern(barNo);
+      const pats=this.getPatterns();
+      const pat=pats[this._activePatternIndex()]||pats[0];
+      const seq=Array.isArray(pat.seq)?pat.seq:pat.seq.replace(/\|/g,'');
+      const totalSteps=seq.length;
       if(S.drums.on&&S.on){
         const stepIdx=this.beat%totalSteps,step=seq[stepIdx],isSam=stepIdx===0||stepIdx%8===0;
         const vel=(isSam?0.82:0.56)+(Math.random()*0.12);
         if(S.drums.type==='handpan'){
           if(step!=='.'&&step!==undefined&&Math.random()<(isSam?0.98:0.88))this._playHandpan(step,this.nextTime,vel);
         } else if(step!=='.'&&Math.random()<(isSam?0.98:0.84)) this._playBol(step,this.nextTime,vel);
+        this._maybeRoll(barNo,barPos,this.nextTime,stepDur);
       }
       this.beat++;this.nextTime+=stepDur;
     }
@@ -1397,7 +1451,7 @@ class Vis {
     this.ringInfo=[
       {name:'Tanpura · Sa',desc:'Persistent drone — 48 sine oscillators with jawari cascade envelope. Spectral sweep creates the shimmering characteristic.',stats:()=>`Tuning: <span>${S.tanpura.tuning}</span> Speed: <span>${S.tanpura.speed.toFixed(1)}x</span>`},
       {name:'Melody · Song',desc:'Structured raga composition using real acoustic sample playback when loaded, with synthesis only as fallback.',stats:()=>`Section: <span>${melody?melody.currentSection:''}</span> Samples: <span>${melody?melody.sampleStatus:''}</span>`},
-      {name:'Drums · Rhythm',desc:'Coherent rhythm layer. Western kit tracks are rendered as acoustic audio loops; Indian and world drums remain selectable.',stats:()=>`Track: <span>${tabla?tabla.patterns[tabla.current].name:''}</span> BPM: <span>${S.tempo}</span>`},
+      {name:'Drums · Rhythm',desc:'Coherent rhythm layer with occasional rolls and automatic pattern changes. Western kit tracks are rendered as acoustic audio loops; Indian and world drums remain selectable.',stats:()=>`Track: <span>${tabla?tabla.patterns[tabla.current].name:''}</span> Change: <span>${tabla?tabla.variationLabel||'listening':''}</span>`},
       {name:'Bells · Chimera',desc:'Sparse inharmonic partials (×2.2, ×3.6, ×5.1). Long reverb tail. Triggered at natural intervals from the raag scale.',stats:()=>`Vol: <span>${(S.bells.vol*100|0)}%</span> Active: <span>${S.bells.on?'Yes':'No'}</span>`},
       {name:'Drone Pad',desc:'Detuned oscillators on Sa, Pa, Sa♯. Ultra-slow LFO modulation creates a breathing background warmth.',stats:()=>`Vol: <span>${(S.pad.vol*100|0)}%</span> Root: <span>${['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'][S.root%12]}</span>`},
       {name:'Tanpura · Resonance',desc:'Body resonance harmonics — peaking filters at 180, 350, 520, 750, 1100 Hz shape the gourd cavity character.',stats:()=>`Jawari: <span>70%</span> Decay: <span>5.0s</span>`},
@@ -1859,7 +1913,7 @@ function updateTel(time){
   const s=Math.floor(time%60).toString().padStart(2,'0');
   const root=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'][S.root%12]+(Math.floor(S.root/12)-1);
   const track=tabla&&tabla.patterns[tabla.current]?tabla.patterns[tabla.current].name:'';
-  document.getElementById('tel').innerHTML=`<div>◉ LIVE &nbsp;<span class="v">${m}:${s}</span></div><div>SCENE <span class="v">${melody?melody.currentSection:'Tuning'}</span></div><div>ROOT <span class="v">${root}</span> &nbsp; TEMPO <span class="v">${S.tempo}</span></div><div>DRUMS <span class="v">${track}</span></div><div>SAMPLES <span class="v">${melody?melody.sampleStatus:'idle'}</span> &nbsp; FPS <span class="v">${S.fps}</span></div>`;
+  document.getElementById('tel').innerHTML=`<div>◉ LIVE &nbsp;<span class="v">${m}:${s}</span></div><div>SCENE <span class="v">${melody?melody.currentSection:'Tuning'}</span></div><div>ROOT <span class="v">${root}</span> &nbsp; TEMPO <span class="v">${S.tempo}</span></div><div>DRUMS <span class="v">${track}</span> ${tabla&&tabla.variationLabel?`<span class="v">${tabla.variationLabel}</span>`:''}</div><div>SAMPLES <span class="v">${melody?melody.sampleStatus:'idle'}</span> &nbsp; FPS <span class="v">${S.fps}</span></div>`;
 }
 function updateInfo(){
   const R=RAAGS[S.raag];
